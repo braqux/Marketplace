@@ -75,7 +75,7 @@ async def setup_callback(interaction: discord.Interaction):
 
     embed = discord.Embed(
         title="Welcome to the Marketplace!",
-        description="Use the buttons below to create a new listing or to learn how to purchase an item.",
+        description="Select a category below to create a new listing, or learn how to purchase an item.",
         color=discord.Color.dark_gold()
     )
     try:
@@ -94,7 +94,7 @@ async def setup_command_error(interaction: discord.Interaction, error: app_comma
         print(f"An error occurred with the setup command: {error}")
         await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
 
-# --- NEW Notify Command ---
+# Notify Command
 @app_commands.checks.has_permissions(administrator=True)
 async def notify_callback(interaction: discord.Interaction, role: discord.Role, message: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -107,7 +107,6 @@ async def notify_callback(interaction: discord.Interaction, role: discord.Role, 
     success_count = 0
     fail_count = 0
 
-    # Create an embed for the message
     notification_embed = discord.Embed(
         title="A Message from the Staff",
         description=message,
@@ -121,7 +120,6 @@ async def notify_callback(interaction: discord.Interaction, role: discord.Role, 
         try:
             await member.send(embed=notification_embed)
             success_count += 1
-            # Add a small delay to avoid hitting Discord's rate limits
             await asyncio.sleep(1) 
         except discord.Forbidden:
             fail_count += 1
@@ -131,11 +129,7 @@ async def notify_callback(interaction: discord.Interaction, role: discord.Role, 
 
     await interaction.followup.send(f"Notification sent!\n\n✅ Successfully sent to **{success_count}** members.\n❌ Failed to send to **{fail_count}** members (they may have DMs disabled).", ephemeral=True)
 
-notify_command = app_commands.Command(
-    name="notify",
-    description="Sends a DM to all members with a specific role.",
-    callback=notify_callback
-)
+notify_command = app_commands.Command(name="notify", description="Sends a DM to all members with a specific role.", callback=notify_callback)
 
 @notify_command.error
 async def notify_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -148,7 +142,6 @@ async def notify_command_error(interaction: discord.Interaction, error: app_comm
 
 # --- UI Components ---
 
-# This view is now stateless. It pulls all necessary data from the message embed.
 class BuyView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -209,7 +202,7 @@ class BuyView(ui.View):
             await interaction.followup.send("Your purchase request has been sent to the third party for processing.", ephemeral=True)
             
             try:
-                await seller.send(f"Chi Wa7ed Accepta Trade '{item_name}'. Chi Admin Ghayverifier Trade W Ghayla9ikoum Bach Ikoun Trade Securisé O Guarantie .")
+                await seller.send(f"The trade for your item '{item_name}' is pending. An admin approval is required, and they will be in touch with you to proceed.")
             except discord.Forbidden:
                 print(f"Could not DM seller {seller.name}. They may have DMs disabled.")
 
@@ -220,10 +213,18 @@ class BuyView(ui.View):
             print(f"An unexpected error occurred during the buy process: {e}")
             await interaction.followup.send("An unexpected error occurred.", ephemeral=True)
 
-class SellModal(ui.Modal, title='List an Item for Sale'):
-    item_name = ui.TextInput(label='Product/Service Name', placeholder='e.g., Custom Logo Design')
-    description = ui.TextInput(label='Description', style=discord.TextStyle.paragraph, placeholder='Provide details about your item.')
-    price = ui.TextInput(label='Price', placeholder='e.g., $50 or 10 Credits')
+class SellModal(ui.Modal):
+    def __init__(self, category: str):
+        super().__init__(title=f"List a New {category}")
+        self.category = category
+
+        self.item_name = ui.TextInput(label='Product/Service Name', placeholder='e.g., Custom Logo Design')
+        self.description = ui.TextInput(label='Description', style=discord.TextStyle.paragraph, placeholder='Provide details about your item.')
+        self.price = ui.TextInput(label='Price', placeholder='e.g., $50 or 10 Credits')
+        
+        self.add_item(self.item_name)
+        self.add_item(self.description)
+        self.add_item(self.price)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -234,7 +235,8 @@ class SellModal(ui.Modal, title='List an Item for Sale'):
             return
 
         embed = discord.Embed(title=self.item_name.value, description=self.description.value, color=discord.Color.blue())
-        embed.add_field(name="Price", value=self.price.value, inline=False)
+        embed.add_field(name="Category", value=self.category, inline=True)
+        embed.add_field(name="Price", value=self.price.value, inline=True)
         embed.set_footer(text=f"SellerID:{interaction.user.id}")
         
         view = BuyView()
@@ -251,8 +253,7 @@ class MarketplaceDashboard(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @ui.button(label="Sell an Item", style=discord.ButtonStyle.success, custom_id="persistent_sell_button")
-    async def sell_button(self, interaction: discord.Interaction, button: ui.Button):
+    async def check_cooldown_and_show_modal(self, interaction: discord.Interaction, category: str):
         user_id = interaction.user.id
         cooldown_period = datetime.timedelta(hours=12)
         
@@ -267,9 +268,25 @@ class MarketplaceDashboard(ui.View):
                 await interaction.response.send_message(f"You must wait {hours}h {minutes}m before posting again.", ephemeral=True)
                 return
         
-        await interaction.response.send_modal(SellModal())
+        await interaction.response.send_modal(SellModal(category=category))
 
-    @ui.button(label="How to Buy", style=discord.ButtonStyle.secondary, custom_id="persistent_buy_info_button")
+    @ui.button(label="Sell a Service", style=discord.ButtonStyle.primary, custom_id="sell_service_button", emoji="💼")
+    async def sell_service_button(self, interaction: discord.Interaction, button: ui.Button):
+        await self.check_cooldown_and_show_modal(interaction, "Service")
+
+    @ui.button(label="Sell a Product", style=discord.ButtonStyle.primary, custom_id="sell_product_button", emoji="📦")
+    async def sell_product_button(self, interaction: discord.Interaction, button: ui.Button):
+        await self.check_cooldown_and_show_modal(interaction, "Product")
+
+    @ui.button(label="Sell a Tool", style=discord.ButtonStyle.primary, custom_id="sell_tool_button", emoji="🛠️")
+    async def sell_tool_button(self, interaction: discord.Interaction, button: ui.Button):
+        await self.check_cooldown_and_show_modal(interaction, "Tool")
+        
+    @ui.button(label="Pro Consultation", style=discord.ButtonStyle.primary, custom_id="sell_consultation_button", emoji="🎓")
+    async def sell_consultation_button(self, interaction: discord.Interaction, button: ui.Button):
+        await self.check_cooldown_and_show_modal(interaction, "Pro Consultation")
+
+    @ui.button(label="How to Buy", style=discord.ButtonStyle.secondary, custom_id="persistent_buy_info_button", row=2)
     async def how_to_buy_button(self, interaction: discord.Interaction, button: ui.Button):
         embed = discord.Embed(
             title="How to Buy in the Marketplace",
