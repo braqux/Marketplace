@@ -202,7 +202,7 @@ class BuyView(ui.View):
             await interaction.followup.send("Your purchase request has been sent to the third party for processing.", ephemeral=True)
             
             try:
-                await seller.send(f"Salam , Chi Wa7ed Accepta Hade Trade '{item_name}' Une Fois Les Admins Ghayverifyiw Trade Ghadi Itwasslo M"akom F A9rab We9te , Good Luck .")
+                await seller.send(f"Salam ,Trade Dyalk Katverifya 7aliyan '{item_name}' Une fois Verifié Ghadi Itwasslo M3ak F A9rab We9te.")
             except discord.Forbidden:
                 print(f"Could not DM seller {seller.name}. They may have DMs disabled.")
 
