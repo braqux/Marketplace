@@ -43,21 +43,56 @@ class MarketBot(commands.Bot):
         # Register the persistent views so they work after the bot restarts
         self.add_view(MarketplaceDashboard())
         self.add_view(BuyView()) # Register the stateless BuyView
-
-    async def on_ready(self):
-        print(f'Logged in as {self.user.name} ({self.user.id})')
-        print('------')
+        
         # --- MODIFIED BLOCK ---
-        # A more robust command syncing process with logging
+        # Sync commands in setup_hook for guaranteed registration before the bot is fully ready.
         try:
-            print("Attempting to sync commands to the guild...")
+            print("Attempting to sync commands to the guild from setup_hook...")
             synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
             print(f"Successfully synced {len(synced)} commands to the guild.")
         except Exception as e:
             print(f"An error occurred while syncing commands: {e}")
         # --- END MODIFIED BLOCK ---
 
+
+    async def on_ready(self):
+        print(f'Logged in as {self.user.name} ({self.user.id})')
+        print('------')
+        # Command syncing is now handled in setup_hook
+
 bot = MarketBot()
+
+# --- New Setup Command ---
+@bot.tree.command(name="setup", description="Sets up the marketplace channel with a control panel.")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup(interaction: discord.Interaction):
+    channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
+    if not channel:
+        await interaction.response.send_message("Error: Marketplace channel ID is incorrect. Check your configuration.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Welcome to the Marketplace!",
+        description="Use the buttons below to create a new listing or to learn how to purchase an item.",
+        color=discord.Color.dark_gold()
+    )
+    # You can add a banner image to the embed here if you like
+    # embed.set_image(url="https://your-image-url.com/banner.png")
+
+    try:
+        await channel.send(embed=embed, view=MarketplaceDashboard())
+        await interaction.response.send_message(f"Marketplace panel has been sent to {channel.mention}.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message(f"Error: I don't have permission to send messages in {channel.mention}.", ephemeral=True)
+
+@setup.error
+async def setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("You do not have permission to run this command.", ephemeral=True)
+    else:
+        print(f"An error occurred with the setup command: {error}")
+        await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
+
 
 # --- UI Components ---
 
@@ -193,37 +228,6 @@ class MarketplaceDashboard(ui.View):
             color=discord.Color.blurple()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# --- New Setup Command ---
-@bot.tree.command(name="setup", description="Sets up the marketplace channel with a control panel.")
-@app_commands.checks.has_permissions(administrator=True)
-async def setup(interaction: discord.Interaction):
-    channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
-    if not channel:
-        await interaction.response.send_message("Error: Marketplace channel ID is incorrect. Check your configuration.", ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="Welcome to the Marketplace!",
-        description="Use the buttons below to create a new listing or to learn how to purchase an item.",
-        color=discord.Color.dark_gold()
-    )
-    # You can add a banner image to the embed here if you like
-    # embed.set_image(url="https://your-image-url.com/banner.png")
-
-    try:
-        await channel.send(embed=embed, view=MarketplaceDashboard())
-        await interaction.response.send_message(f"Marketplace panel has been sent to {channel.mention}.", ephemeral=True)
-    except discord.Forbidden:
-        await interaction.response.send_message(f"Error: I don't have permission to send messages in {channel.mention}.", ephemeral=True)
-
-@setup.error
-async def setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("You do not have permission to run this command.", ephemeral=True)
-    else:
-        print(f"An error occurred with the setup command: {error}")
-        await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
 
 # --- Bot Execution ---
 bot.run(BOT_TOKEN)
