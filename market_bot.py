@@ -74,8 +74,8 @@ async def setup_callback(interaction: discord.Interaction):
         return
 
     embed = discord.Embed(
-        title="Welcome to the Marketplace!",
-        description="Select a category below to create a new listing, or learn how to purchase an item.",
+        title="Merhba Bikoum F L'Marketplace , Hna T9dro t7to/Tchriw Ga3 Les Services En toute Securité O Guarantie!",
+        description="KHTARO HNA DAKCHI LI KAT9DMO OLA WESSFO DAKCHI LI KHASSKOM .",
         color=discord.Color.dark_gold()
     )
     try:
