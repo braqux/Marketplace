@@ -4,6 +4,7 @@ from discord.ext import commands
 import datetime
 import os
 from datetime import timezone
+import asyncio
 
 # --- Configuration ---
 # This block is now wrapped in a try...except to prevent crashes on startup.
@@ -44,9 +45,9 @@ class MarketBot(commands.Bot):
         self.add_view(MarketplaceDashboard())
         self.add_view(BuyView()) # Register the stateless BuyView
         
-        # --- MODIFIED BLOCK ---
-        # Manually add the command to the tree before syncing. This is a more robust method.
+        # Manually add the commands to the tree before syncing.
         self.tree.add_command(setup_command, guild=discord.Object(id=GUILD_ID))
+        self.tree.add_command(notify_command, guild=discord.Object(id=GUILD_ID))
         
         # Sync commands in setup_hook for guaranteed registration.
         try:
@@ -55,7 +56,6 @@ class MarketBot(commands.Bot):
             print(f"Successfully synced {len(synced)} commands to the guild.")
         except Exception as e:
             print(f"An error occurred while syncing commands: {e}")
-        # --- END MODIFIED BLOCK ---
 
     async def on_ready(self):
         print(f'Logged in as {self.user.name} ({self.user.id})')
@@ -63,7 +63,9 @@ class MarketBot(commands.Bot):
 
 bot = MarketBot()
 
-# --- New Setup Command (Defined without a decorator) ---
+# --- Commands (Defined without a decorator) ---
+
+# Setup Command
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_callback(interaction: discord.Interaction):
     channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
@@ -82,12 +84,7 @@ async def setup_callback(interaction: discord.Interaction):
     except discord.Forbidden:
         await interaction.response.send_message(f"Error: I don't have permission to send messages in {channel.mention}.", ephemeral=True)
 
-# Create the command object manually
-setup_command = app_commands.Command(
-    name="setup",
-    description="Sets up the marketplace channel with a control panel.",
-    callback=setup_callback
-)
+setup_command = app_commands.Command(name="setup", description="Sets up the marketplace channel with a control panel.", callback=setup_callback)
 
 @setup_command.error
 async def setup_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -95,6 +92,57 @@ async def setup_command_error(interaction: discord.Interaction, error: app_comma
         await interaction.response.send_message("You do not have permission to run this command.", ephemeral=True)
     else:
         print(f"An error occurred with the setup command: {error}")
+        await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
+
+# --- NEW Notify Command ---
+@app_commands.checks.has_permissions(administrator=True)
+async def notify_callback(interaction: discord.Interaction, role: discord.Role, message: str):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    
+    members_with_role = role.members
+    if not members_with_role:
+        await interaction.followup.send(f"There are no members with the {role.mention} role.", ephemeral=True)
+        return
+
+    success_count = 0
+    fail_count = 0
+
+    # Create an embed for the message
+    notification_embed = discord.Embed(
+        title="A Message from the Staff",
+        description=message,
+        color=role.color if role.color.value != 0 else discord.Color.blurple()
+    )
+    notification_embed.set_footer(text=f"This message was sent to all members with the '{role.name}' role.")
+
+    for member in members_with_role:
+        if member.bot:
+            continue
+        try:
+            await member.send(embed=notification_embed)
+            success_count += 1
+            # Add a small delay to avoid hitting Discord's rate limits
+            await asyncio.sleep(1) 
+        except discord.Forbidden:
+            fail_count += 1
+        except Exception as e:
+            fail_count += 1
+            print(f"Failed to send DM to {member.name}: {e}")
+
+    await interaction.followup.send(f"Notification sent!\n\n✅ Successfully sent to **{success_count}** members.\n❌ Failed to send to **{fail_count}** members (they may have DMs disabled).", ephemeral=True)
+
+notify_command = app_commands.Command(
+    name="notify",
+    description="Sends a DM to all members with a specific role.",
+    callback=notify_callback
+)
+
+@notify_command.error
+async def notify_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("You do not have permission to run this command.", ephemeral=True)
+    else:
+        print(f"An error occurred with the notify command: {error}")
         await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
 
 
@@ -161,7 +209,7 @@ class BuyView(ui.View):
             await interaction.followup.send("Your purchase request has been sent to the third party for processing.", ephemeral=True)
             
             try:
-                await seller.send(f"Trade Dyalek Katverifia 7aliyan Mn Taraf Les admins '{item_name}' . Ki Tssali Lverification Ghadi N3lmok F A9rab We9te , Good Luck lKolchi.")
+                await seller.send(f"The trade for your item '{item_name}' is pending. An admin approval is required, and they will be in touch with you to proceed.")
             except discord.Forbidden:
                 print(f"Could not DM seller {seller.name}. They may have DMs disabled.")
 
