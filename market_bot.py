@@ -45,7 +45,10 @@ class MarketBot(commands.Bot):
         self.add_view(BuyView()) # Register the stateless BuyView
         
         # --- MODIFIED BLOCK ---
-        # Sync commands in setup_hook for guaranteed registration before the bot is fully ready.
+        # Manually add the command to the tree before syncing. This is a more robust method.
+        self.tree.add_command(setup_command, guild=discord.Object(id=GUILD_ID))
+        
+        # Sync commands in setup_hook for guaranteed registration.
         try:
             print("Attempting to sync commands to the guild from setup_hook...")
             synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
@@ -54,18 +57,15 @@ class MarketBot(commands.Bot):
             print(f"An error occurred while syncing commands: {e}")
         # --- END MODIFIED BLOCK ---
 
-
     async def on_ready(self):
         print(f'Logged in as {self.user.name} ({self.user.id})')
         print('------')
-        # Command syncing is now handled in setup_hook
 
 bot = MarketBot()
 
-# --- New Setup Command ---
-@bot.tree.command(name="setup", description="Sets up the marketplace channel with a control panel.")
+# --- New Setup Command (Defined without a decorator) ---
 @app_commands.checks.has_permissions(administrator=True)
-async def setup(interaction: discord.Interaction):
+async def setup_callback(interaction: discord.Interaction):
     channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
     if not channel:
         await interaction.response.send_message("Error: Marketplace channel ID is incorrect. Check your configuration.", ephemeral=True)
@@ -76,17 +76,21 @@ async def setup(interaction: discord.Interaction):
         description="Use the buttons below to create a new listing or to learn how to purchase an item.",
         color=discord.Color.dark_gold()
     )
-    # You can add a banner image to the embed here if you like
-    # embed.set_image(url="https://your-image-url.com/banner.png")
-
     try:
         await channel.send(embed=embed, view=MarketplaceDashboard())
         await interaction.response.send_message(f"Marketplace panel has been sent to {channel.mention}.", ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message(f"Error: I don't have permission to send messages in {channel.mention}.", ephemeral=True)
 
-@setup.error
-async def setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+# Create the command object manually
+setup_command = app_commands.Command(
+    name="setup",
+    description="Sets up the marketplace channel with a control panel.",
+    callback=setup_callback
+)
+
+@setup_command.error
+async def setup_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message("You do not have permission to run this command.", ephemeral=True)
     else:
@@ -111,7 +115,6 @@ class BuyView(ui.View):
 
         embed = interaction.message.embeds[0]
         
-        # --- Parse all data from the embed ---
         item_name = embed.title if embed.title else "N/A"
         item_description = embed.description if embed.description else "No description provided."
         price_field = discord.utils.get(embed.fields, name="Price")
@@ -184,7 +187,6 @@ class SellModal(ui.Modal, title='List an Item for Sale'):
 
         embed = discord.Embed(title=self.item_name.value, description=self.description.value, color=discord.Color.blue())
         embed.add_field(name="Price", value=self.price.value, inline=False)
-        # The seller ID is stored in the footer to be parsed by the Buy button later
         embed.set_footer(text=f"SellerID:{interaction.user.id}")
         
         view = BuyView()
@@ -197,7 +199,6 @@ class SellModal(ui.Modal, title='List an Item for Sale'):
             print(f"Error posting to marketplace: {e}")
             await interaction.followup.send('There was an error posting your listing.', ephemeral=True)
 
-# --- New Marketplace Control Panel UI ---
 class MarketplaceDashboard(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
