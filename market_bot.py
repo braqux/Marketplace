@@ -209,7 +209,7 @@ class BuyView(ui.View):
             await interaction.followup.send("Your purchase request has been sent to the third party for processing.", ephemeral=True)
             
             try:
-                await seller.send(f"The trade for your item '{item_name}' is pending. An admin approval is required, and they will be in touch with you to proceed.")
+                await seller.send(f"Chi Wa7ed Accepta Trade '{item_name}'. Chi Admin Ghayverifier Trade W Ghayla9ikoum Bach Ikoun Trade Securisé O Guarantie .")
             except discord.Forbidden:
                 print(f"Could not DM seller {seller.name}. They may have DMs disabled.")
 
