@@ -13,19 +13,23 @@ try:
     MARKETPLACE_CHANNEL_ID = int(os.environ.get("MARKETPLACE_CHANNEL_ID"))
     THIRD_PARTY_CHANNEL_ID = int(os.environ.get("THIRD_PARTY_CHANNEL_ID"))
     GUILD_ID = int(os.environ.get("GUILD_ID"))
+    # --- MODIFIED VARIABLE --- This now accepts multiple, comma-separated IDs
+    SUPPORT_ROLE_IDS_STR = os.environ.get("SUPPORT_ROLE_IDS")
+    SUPPORT_ROLE_IDS = [int(role_id.strip()) for role_id in SUPPORT_ROLE_IDS_STR.split(',')]
 
     # Check if any essential variable is missing right away
-    if not all([BOT_TOKEN, MARKETPLACE_CHANNEL_ID, THIRD_PARTY_CHANNEL_ID, GUILD_ID]):
+    if not all([BOT_TOKEN, MARKETPLACE_CHANNEL_ID, THIRD_PARTY_CHANNEL_ID, GUILD_ID, SUPPORT_ROLE_IDS]):
         raise ValueError("One or more required environment variables are not set.")
 
 except (TypeError, ValueError) as e:
     print("--- CONFIGURATION ERROR ---")
-    print("One of your environment variables (like a channel ID) is missing or invalid.")
-    print("Please go to your project on Railway and check the following variables are set correctly:")
+    print("One of your environment variables is missing or invalid.")
+    print("Please check the following variables on Railway:")
     print("- DISCORD_BOT_TOKEN")
     print("- MARKETPLACE_CHANNEL_ID")
     print("- THIRD_PARTY_CHANNEL_ID")
     print("- GUILD_ID")
+    print("- SUPPORT_ROLE_IDS (must be a comma-separated list of role IDs)")
     print(f"Error details: {e}")
     # Exit gracefully if configuration is bad
     exit()
@@ -48,6 +52,7 @@ class MarketBot(commands.Bot):
         # Manually add the commands to the tree before syncing.
         self.tree.add_command(setup_command, guild=discord.Object(id=GUILD_ID))
         self.tree.add_command(notify_command, guild=discord.Object(id=GUILD_ID))
+        self.tree.add_command(close_command, guild=discord.Object(id=GUILD_ID)) # Add the new close command
         
         # Sync commands in setup_hook for guaranteed registration.
         try:
@@ -137,6 +142,26 @@ async def notify_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message("You do not have permission to run this command.", ephemeral=True)
     else:
         print(f"An error occurred with the notify command: {error}")
+        await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
+
+# Close Ticket Command
+@app_commands.checks.has_permissions(manage_channels=True)
+async def close_callback(interaction: discord.Interaction):
+    if "ticket-" in interaction.channel.name:
+        await interaction.response.send_message("Closing this ticket in 5 seconds...")
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+    else:
+        await interaction.response.send_message("This command can only be used in a ticket channel.", ephemeral=True)
+
+close_command = app_commands.Command(name="close", description="Closes a support ticket channel.", callback=close_callback)
+
+@close_command.error
+async def close_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("You do not have permission to run this command.", ephemeral=True)
+    else:
+        print(f"An error occurred with the close command: {error}")
         await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
 
 
@@ -286,14 +311,55 @@ class MarketplaceDashboard(ui.View):
     async def sell_consultation_button(self, interaction: discord.Interaction, button: ui.Button):
         await self.check_cooldown_and_show_modal(interaction, "Pro Consultation")
 
-    @ui.button(label="How to Buy", style=discord.ButtonStyle.secondary, custom_id="persistent_buy_info_button", row=2)
-    async def how_to_buy_button(self, interaction: discord.Interaction, button: ui.Button):
-        embed = discord.Embed(
-            title="How to Buy in the Marketplace",
-            description="It's simple! Browse the listings posted in this channel. When you find an item you want, click the green **`Buy Now`** button.\n\nThis will notify our third-party team who will then contact you and the seller to facilitate a secure trade.",
-            color=discord.Color.blurple()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    @ui.button(label="Contact Support", style=discord.ButtonStyle.secondary, custom_id="contact_support_button", row=2, emoji="🎟️")
+    async def contact_support_button(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # --- MODIFIED BLOCK ---
+        support_roles = [interaction.guild.get_role(role_id) for role_id in SUPPORT_ROLE_IDS]
+        support_roles = [role for role in support_roles if role is not None] # Filter out any roles that weren't found
+
+        if not support_roles:
+            await interaction.followup.send("Error: No valid support roles found. Please contact an admin.", ephemeral=True)
+            return
+
+        # Check if a ticket channel for this user already exists
+        for channel in interaction.guild.text_channels:
+            if channel.name == f"ticket-{interaction.user.name.lower()}":
+                await interaction.followup.send(f"You already have an open ticket: {channel.mention}", ephemeral=True)
+                return
+
+        # Permissions for the new channel
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+        }
+        for role in support_roles:
+            overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+        try:
+            # Create the ticket channel
+            ticket_channel = await interaction.guild.create_text_channel(
+                name=f"ticket-{interaction.user.name.lower()}",
+                overwrites=overwrites,
+                topic=f"Support ticket for {interaction.user.name} (ID: {interaction.user.id})"
+            )
+            
+            support_mentions = " ".join(role.mention for role in support_roles)
+            # Send a welcome message in the new ticket channel
+            await ticket_channel.send(
+                f"Welcome {interaction.user.mention}! {support_mentions} will be with you shortly.\n"
+                f"Please describe your issue in detail."
+            )
+
+            # Send a confirmation to the user
+            await interaction.followup.send(f"A support ticket has been created for you: {ticket_channel.mention}", ephemeral=True)
+
+        except discord.Forbidden:
+            await interaction.followup.send("I don't have the required permissions to create a ticket channel.", ephemeral=True)
+        except Exception as e:
+            print(f"An error occurred while creating a ticket: {e}")
+            await interaction.followup.send("An unexpected error occurred while creating your ticket.", ephemeral=True)
 
 # --- Bot Execution ---
 bot.run(BOT_TOKEN)
