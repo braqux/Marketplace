@@ -6,11 +6,28 @@ import os
 from datetime import timezone
 
 # --- Configuration ---
-# Securely gets credentials from the hosting environment (Railway).
-BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN") 
-MARKETPLACE_CHANNEL_ID = int(os.environ.get("MARKETPLACE_CHANNEL_ID"))
-THIRD_PARTY_CHANNEL_ID = int(os.environ.get("THIRD_PARTY_CHANNEL_ID"))
-GUILD_ID = int(os.environ.get("GUILD_ID"))
+# This block is now wrapped in a try...except to prevent crashes on startup.
+try:
+    BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+    MARKETPLACE_CHANNEL_ID = int(os.environ.get("MARKETPLACE_CHANNEL_ID"))
+    THIRD_PARTY_CHANNEL_ID = int(os.environ.get("THIRD_PARTY_CHANNEL_ID"))
+    GUILD_ID = int(os.environ.get("GUILD_ID"))
+
+    # Check if any essential variable is missing right away
+    if not all([BOT_TOKEN, MARKETPLACE_CHANNEL_ID, THIRD_PARTY_CHANNEL_ID, GUILD_ID]):
+        raise ValueError("One or more required environment variables are not set.")
+
+except (TypeError, ValueError) as e:
+    print("--- CONFIGURATION ERROR ---")
+    print("One of your environment variables (like a channel ID) is missing or invalid.")
+    print("Please go to your project on Railway and check the following variables are set correctly:")
+    print("- DISCORD_BOT_TOKEN")
+    print("- MARKETPLACE_CHANNEL_ID")
+    print("- THIRD_PARTY_CHANNEL_ID")
+    print("- GUILD_ID")
+    print(f"Error details: {e}")
+    # Exit gracefully if configuration is bad
+    exit()
 
 # --- Bot Setup ---
 intents = discord.Intents.default()
@@ -22,6 +39,11 @@ class MarketBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.user_cooldowns = {}
 
+    async def setup_hook(self) -> None:
+        # Register the persistent views so they work after the bot restarts
+        self.add_view(MarketplaceDashboard())
+        self.add_view(BuyView()) # Register the stateless BuyView
+
     async def on_ready(self):
         print(f'Logged in as {self.user.name} ({self.user.id})')
         print('------')
@@ -30,18 +52,41 @@ class MarketBot(commands.Bot):
 bot = MarketBot()
 
 # --- UI Components ---
+
+# This view is now stateless. It pulls all necessary data from the message embed.
 class BuyView(ui.View):
-    def __init__(self, seller: discord.Member, item_name: str, item_description: str, item_price: str):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.seller = seller
-        self.item_name = item_name
-        self.item_description = item_description
-        self.item_price = item_price
 
     @ui.button(label="Buy Now", style=discord.ButtonStyle.success, custom_id="buy_now_button")
     async def buy_button(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         
+        if not interaction.message.embeds:
+            await interaction.followup.send("Error: Could not find listing details.", ephemeral=True)
+            return
+
+        embed = interaction.message.embeds[0]
+        
+        # --- Parse all data from the embed ---
+        item_name = embed.title if embed.title else "N/A"
+        item_description = embed.description if embed.description else "No description provided."
+        price_field = discord.utils.get(embed.fields, name="Price")
+        item_price = price_field.value if price_field else "N/A"
+        
+        footer_text = embed.footer.text
+        if not footer_text or "SellerID:" not in footer_text:
+            await interaction.followup.send("Error: Listing is invalid. Seller ID is missing.", ephemeral=True)
+            return
+        
+        try:
+            seller_id_str = footer_text.split("SellerID:")[1]
+            seller_id = int(seller_id_str)
+            seller = await interaction.guild.fetch_member(seller_id)
+        except (IndexError, ValueError, discord.NotFound):
+            await interaction.followup.send("Error: Could not identify the seller. The user may have left the server.", ephemeral=True)
+            return
+
         buyer = interaction.user
         third_party_channel = interaction.guild.get_channel(THIRD_PARTY_CHANNEL_ID)
 
@@ -55,10 +100,10 @@ class BuyView(ui.View):
             color=discord.Color.gold(),
             timestamp=datetime.datetime.now(timezone.utc)
         )
-        trade_embed.add_field(name="Item Name", value=self.item_name, inline=False)
-        trade_embed.add_field(name="Item Description", value=self.item_description, inline=False)
-        trade_embed.add_field(name="Price", value=self.item_price, inline=False)
-        trade_embed.add_field(name="Seller", value=f"{self.seller.mention} (`{self.seller.id}`)", inline=True)
+        trade_embed.add_field(name="Item Name", value=item_name, inline=False)
+        trade_embed.add_field(name="Item Description", value=item_description, inline=False)
+        trade_embed.add_field(name="Price", value=item_price, inline=False)
+        trade_embed.add_field(name="Seller", value=f"{seller.mention} (`{seller.id}`)", inline=True)
         trade_embed.add_field(name="Buyer", value=f"{buyer.mention} (`{buyer.id}`)", inline=True)
         trade_embed.set_footer(text="Trade Bot")
 
@@ -70,9 +115,9 @@ class BuyView(ui.View):
             await interaction.followup.send("Your purchase request has been sent to the third party for processing.", ephemeral=True)
             
             try:
-                await self.seller.send(f"Your item '{self.item_name}' is being purchased by {buyer.mention}.")
+                await seller.send(f"Your item '{item_name}' is being purchased by {buyer.mention}.")
             except discord.Forbidden:
-                print(f"Could not DM seller {self.seller.name}. They may have DMs disabled.")
+                print(f"Could not DM seller {seller.name}. They may have DMs disabled.")
 
         except discord.Forbidden:
             print(f"Error: Bot missing permissions in third-party channel ({THIRD_PARTY_CHANNEL_ID}).")
@@ -96,9 +141,10 @@ class SellModal(ui.Modal, title='List an Item for Sale'):
 
         embed = discord.Embed(title=self.item_name.value, description=self.description.value, color=discord.Color.blue())
         embed.add_field(name="Price", value=self.price.value, inline=False)
-        embed.set_footer(text="Posted by an anonymous seller")
+        # The seller ID is stored in the footer to be parsed by the Buy button later
+        embed.set_footer(text=f"SellerID:{interaction.user.id}")
         
-        view = BuyView(seller=interaction.user, item_name=self.item_name.value, item_description=self.description.value, item_price=self.price.value)
+        view = BuyView()
 
         try:
             await marketplace_channel.send(embed=embed, view=view)
@@ -108,28 +154,68 @@ class SellModal(ui.Modal, title='List an Item for Sale'):
             print(f"Error posting to marketplace: {e}")
             await interaction.followup.send('There was an error posting your listing.', ephemeral=True)
 
-# --- Slash Commands ---
-@bot.tree.command(name="sell", description="List a service or product anonymously.", guild=discord.Object(id=GUILD_ID))
-async def sell(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    cooldown_period = datetime.timedelta(hours=12)
-    
-    if user_id in bot.user_cooldowns:
-        last_post_time = bot.user_cooldowns[user_id]
-        time_since_last_post = datetime.datetime.now(timezone.utc) - last_post_time
+# --- New Marketplace Control Panel UI ---
+class MarketplaceDashboard(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Sell an Item", style=discord.ButtonStyle.success, custom_id="persistent_sell_button")
+    async def sell_button(self, interaction: discord.Interaction, button: ui.Button):
+        user_id = interaction.user.id
+        cooldown_period = datetime.timedelta(hours=12)
         
-        if time_since_last_post < cooldown_period:
-            time_remaining = cooldown_period - time_since_last_post
-            hours, remainder = divmod(int(time_remaining.total_seconds()), 3600)
-            minutes, _ = divmod(remainder, 60)
-            await interaction.response.send_message(f"You must wait {hours}h {minutes}m before posting again.", ephemeral=True)
-            return
+        if user_id in bot.user_cooldowns:
+            last_post_time = bot.user_cooldowns[user_id]
+            time_since_last_post = datetime.datetime.now(timezone.utc) - last_post_time
             
-    await interaction.response.send_modal(SellModal())
+            if time_since_last_post < cooldown_period:
+                time_remaining = cooldown_period - time_since_last_post
+                hours, remainder = divmod(int(time_remaining.total_seconds()), 3600)
+                minutes, _ = divmod(remainder, 60)
+                await interaction.response.send_message(f"You must wait {hours}h {minutes}m before posting again.", ephemeral=True)
+                return
+        
+        await interaction.response.send_modal(SellModal())
+
+    @ui.button(label="How to Buy", style=discord.ButtonStyle.secondary, custom_id="persistent_buy_info_button")
+    async def how_to_buy_button(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="How to Buy in the Marketplace",
+            description="It's simple! Browse the listings posted in this channel. When you find an item you want, click the green **`Buy Now`** button.\n\nThis will notify our third-party team who will then contact you and the seller to facilitate a secure trade.",
+            color=discord.Color.blurple()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# --- New Setup Command ---
+@bot.tree.command(name="setup", description="Sets up the marketplace channel with a control panel.")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup(interaction: discord.Interaction):
+    channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
+    if not channel:
+        await interaction.response.send_message("Error: Marketplace channel ID is incorrect. Check your configuration.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Welcome to the Marketplace!",
+        description="Use the buttons below to create a new listing or to learn how to purchase an item.",
+        color=discord.Color.dark_gold()
+    )
+    # You can add a banner image to the embed here if you like
+    # embed.set_image(url="https://your-image-url.com/banner.png")
+
+    try:
+        await channel.send(embed=embed, view=MarketplaceDashboard())
+        await interaction.response.send_message(f"Marketplace panel has been sent to {channel.mention}.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message(f"Error: I don't have permission to send messages in {channel.mention}.", ephemeral=True)
+
+@setup.error
+async def setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("You do not have permission to run this command.", ephemeral=True)
+    else:
+        print(f"An error occurred with the setup command: {error}")
+        await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
 
 # --- Bot Execution ---
-if all([BOT_TOKEN, MARKETPLACE_CHANNEL_ID, THIRD_PARTY_CHANNEL_ID, GUILD_ID]):
-    bot.run(BOT_TOKEN)
-else:
-    print("ERROR: One or more required environment variables are missing.")
-    print("Please set DISCORD_BOT_TOKEN, MARKETPLACE_CHANNEL_ID, THIRD_PARTY_CHANNEL_ID, and GUILD_ID in Railway.")
+bot.run(BOT_TOKEN)
