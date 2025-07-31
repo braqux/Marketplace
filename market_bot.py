@@ -13,12 +13,14 @@ try:
     MARKETPLACE_CHANNEL_ID = int(os.environ.get("MARKETPLACE_CHANNEL_ID"))
     THIRD_PARTY_CHANNEL_ID = int(os.environ.get("THIRD_PARTY_CHANNEL_ID"))
     GUILD_ID = int(os.environ.get("GUILD_ID"))
-    # --- MODIFIED VARIABLE --- This now accepts multiple, comma-separated IDs
     SUPPORT_ROLE_IDS_STR = os.environ.get("SUPPORT_ROLE_IDS")
     SUPPORT_ROLE_IDS = [int(role_id.strip()) for role_id in SUPPORT_ROLE_IDS_STR.split(',')]
+    # --- NEW VARIABLE --- You must add this to Railway
+    TICKET_CATEGORY_ID = int(os.environ.get("TICKET_CATEGORY_ID"))
+
 
     # Check if any essential variable is missing right away
-    if not all([BOT_TOKEN, MARKETPLACE_CHANNEL_ID, THIRD_PARTY_CHANNEL_ID, GUILD_ID, SUPPORT_ROLE_IDS]):
+    if not all([BOT_TOKEN, MARKETPLACE_CHANNEL_ID, THIRD_PARTY_CHANNEL_ID, GUILD_ID, SUPPORT_ROLE_IDS, TICKET_CATEGORY_ID]):
         raise ValueError("One or more required environment variables are not set.")
 
 except (TypeError, ValueError) as e:
@@ -30,6 +32,7 @@ except (TypeError, ValueError) as e:
     print("- THIRD_PARTY_CHANNEL_ID")
     print("- GUILD_ID")
     print("- SUPPORT_ROLE_IDS (must be a comma-separated list of role IDs)")
+    print("- TICKET_CATEGORY_ID (The ID of the category where tickets should be created)")
     print(f"Error details: {e}")
     # Exit gracefully if configuration is bad
     exit()
@@ -52,7 +55,7 @@ class MarketBot(commands.Bot):
         # Manually add the commands to the tree before syncing.
         self.tree.add_command(setup_command, guild=discord.Object(id=GUILD_ID))
         self.tree.add_command(notify_command, guild=discord.Object(id=GUILD_ID))
-        self.tree.add_command(close_command, guild=discord.Object(id=GUILD_ID)) # Add the new close command
+        self.tree.add_command(close_command, guild=discord.Object(id=GUILD_ID))
         
         # Sync commands in setup_hook for guaranteed registration.
         try:
@@ -262,104 +265,4 @@ class SellModal(ui.Modal):
         embed = discord.Embed(title=self.item_name.value, description=self.description.value, color=discord.Color.blue())
         embed.add_field(name="Category", value=self.category, inline=True)
         embed.add_field(name="Price", value=self.price.value, inline=True)
-        embed.set_footer(text=f"SellerID:{interaction.user.id}")
-        
-        view = BuyView()
-
-        try:
-            await marketplace_channel.send(embed=embed, view=view)
-            await interaction.followup.send('Your anonymous listing has been posted!', ephemeral=True)
-            bot.user_cooldowns[interaction.user.id] = datetime.datetime.now(timezone.utc)
-        except Exception as e:
-            print(f"Error posting to marketplace: {e}")
-            await interaction.followup.send('There was an error posting your listing.', ephemeral=True)
-
-class MarketplaceDashboard(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    async def check_cooldown_and_show_modal(self, interaction: discord.Interaction, category: str):
-        user_id = interaction.user.id
-        cooldown_period = datetime.timedelta(hours=12)
-        
-        if user_id in bot.user_cooldowns:
-            last_post_time = bot.user_cooldowns[user_id]
-            time_since_last_post = datetime.datetime.now(timezone.utc) - last_post_time
-            
-            if time_since_last_post < cooldown_period:
-                time_remaining = cooldown_period - time_since_last_post
-                hours, remainder = divmod(int(time_remaining.total_seconds()), 3600)
-                minutes, _ = divmod(remainder, 60)
-                await interaction.response.send_message(f"You must wait {hours}h {minutes}m before posting again.", ephemeral=True)
-                return
-        
-        await interaction.response.send_modal(SellModal(category=category))
-
-    @ui.button(label="Sell a Service", style=discord.ButtonStyle.primary, custom_id="sell_service_button", emoji="💼")
-    async def sell_service_button(self, interaction: discord.Interaction, button: ui.Button):
-        await self.check_cooldown_and_show_modal(interaction, "Service")
-
-    @ui.button(label="Sell a Product", style=discord.ButtonStyle.primary, custom_id="sell_product_button", emoji="📦")
-    async def sell_product_button(self, interaction: discord.Interaction, button: ui.Button):
-        await self.check_cooldown_and_show_modal(interaction, "Product")
-
-    @ui.button(label="Sell a Tool", style=discord.ButtonStyle.primary, custom_id="sell_tool_button", emoji="🛠️")
-    async def sell_tool_button(self, interaction: discord.Interaction, button: ui.Button):
-        await self.check_cooldown_and_show_modal(interaction, "Tool")
-        
-    @ui.button(label="Pro Consultation", style=discord.ButtonStyle.primary, custom_id="sell_consultation_button", emoji="🎓")
-    async def sell_consultation_button(self, interaction: discord.Interaction, button: ui.Button):
-        await self.check_cooldown_and_show_modal(interaction, "Pro Consultation")
-
-    @ui.button(label="Contact Support", style=discord.ButtonStyle.secondary, custom_id="contact_support_button", row=2, emoji="🎟️")
-    async def contact_support_button(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        # --- MODIFIED BLOCK ---
-        support_roles = [interaction.guild.get_role(role_id) for role_id in SUPPORT_ROLE_IDS]
-        support_roles = [role for role in support_roles if role is not None] # Filter out any roles that weren't found
-
-        if not support_roles:
-            await interaction.followup.send("Error: No valid support roles found. Please contact an admin.", ephemeral=True)
-            return
-
-        # Check if a ticket channel for this user already exists
-        for channel in interaction.guild.text_channels:
-            if channel.name == f"ticket-{interaction.user.name.lower()}":
-                await interaction.followup.send(f"You already have an open ticket: {channel.mention}", ephemeral=True)
-                return
-
-        # Permissions for the new channel
-        overwrites = {
-            interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-        }
-        for role in support_roles:
-            overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-
-        try:
-            # Create the ticket channel
-            ticket_channel = await interaction.guild.create_text_channel(
-                name=f"ticket-{interaction.user.name.lower()}",
-                overwrites=overwrites,
-                topic=f"Support ticket for {interaction.user.name} (ID: {interaction.user.id})"
-            )
-            
-            support_mentions = " ".join(role.mention for role in support_roles)
-            # Send a welcome message in the new ticket channel
-            await ticket_channel.send(
-                f"Welcome {interaction.user.mention}! {support_mentions} will be with you shortly.\n"
-                f"Please describe your issue in detail."
-            )
-
-            # Send a confirmation to the user
-            await interaction.followup.send(f"A support ticket has been created for you: {ticket_channel.mention}", ephemeral=True)
-
-        except discord.Forbidden:
-            await interaction.followup.send("I don't have the required permissions to create a ticket channel.", ephemeral=True)
-        except Exception as e:
-            print(f"An error occurred while creating a ticket: {e}")
-            await interaction.followup.send("An unexpected error occurred while creating your ticket.", ephemeral=True)
-
-# --- Bot Execution ---
-bot.run(BOT_TOKEN)
+        embed.set_footer(text=f"Sel
