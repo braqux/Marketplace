@@ -47,7 +47,15 @@ class MarketBot(commands.Bot):
     async def on_ready(self):
         print(f'Logged in as {self.user.name} ({self.user.id})')
         print('------')
-        await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+        # --- MODIFIED BLOCK ---
+        # A more robust command syncing process with logging
+        try:
+            print("Attempting to sync commands to the guild...")
+            synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+            print(f"Successfully synced {len(synced)} commands to the guild.")
+        except Exception as e:
+            print(f"An error occurred while syncing commands: {e}")
+        # --- END MODIFIED BLOCK ---
 
 bot = MarketBot()
 
